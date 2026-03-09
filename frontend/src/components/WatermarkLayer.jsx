@@ -19,11 +19,13 @@ export default function WatermarkLayer({ name, studentId }) {
 
   return (
     <div className="watermark-layer" aria-hidden="true">
-      {Array.from({ length: 24 }).map((_, idx) => (
-        <span key={idx} className="watermark-item">
-          {text}
-        </span>
-      ))}
+      <div className="watermark-grid">
+        {Array.from({ length: 180 }).map((_, idx) => (
+          <span key={idx} className="watermark-item">
+            {text}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

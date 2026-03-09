@@ -3,6 +3,7 @@ import path from 'path';
 import bcrypt from 'bcryptjs';
 import { db } from '../config/db.js';
 import { rootDir } from '../config/env.js';
+import { DEFAULT_NOTICE_HTML, NOTICE_SETTING_KEY } from '../constants/notice.js';
 
 const schemaPath = path.join(rootDir, 'src', 'db', 'schema.sql');
 const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
@@ -35,3 +36,8 @@ if (!existing) {
 }
 
 console.log('Database initialized:', process.env.DB_PATH || path.join(rootDir, 'data', 'app.db'));
+
+db.prepare(
+  `INSERT OR IGNORE INTO system_settings (key, value, updated_at)
+   VALUES (?, ?, datetime('now'))`
+).run(NOTICE_SETTING_KEY, DEFAULT_NOTICE_HTML);

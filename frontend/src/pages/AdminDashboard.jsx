@@ -5,26 +5,46 @@ export default function AdminDashboard() {
   const [docs, setDocs] = useState([]);
   const [users, setUsers] = useState([]);
   const [docTitles, setDocTitles] = useState({});
+  const [noticeHtml, setNoticeHtml] = useState('');
   const [pdfFile, setPdfFile] = useState(null);
   const [title, setTitle] = useState('');
   const [importFile, setImportFile] = useState(null);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [noticeSaving, setNoticeSaving] = useState(false);
 
   const name = localStorage.getItem('sv_name') || 'admin';
 
   async function loadData() {
-    const [docRes, userRes] = await Promise.all([api.get('/admin/documents'), api.get('/admin/users')]);
-    const docList = docRes.data.list || [];
-    setDocs(docList);
-    setUsers(userRes.data.list || []);
-    setDocTitles((prev) => {
-      const next = {};
-      docList.forEach((doc) => {
-        next[doc.id] = prev[doc.id] ?? doc.title;
+    const [docRes, userRes, noticeRes] = await Promise.allSettled([
+      api.get('/admin/documents'),
+      api.get('/admin/users'),
+      api.get('/admin/notice'),
+    ]);
+
+    if (docRes.status === 'fulfilled') {
+      const docList = docRes.value.data.list || [];
+      setDocs(docList);
+      setDocTitles((prev) => {
+        const next = {};
+        docList.forEach((doc) => {
+          next[doc.id] = prev[doc.id] ?? doc.title;
+        });
+        return next;
       });
-      return next;
-    });
+    }
+
+    if (userRes.status === 'fulfilled') {
+      setUsers(userRes.value.data.list || []);
+    }
+
+    if (noticeRes.status === 'fulfilled') {
+      setNoticeHtml(typeof noticeRes.value.data?.html === 'string' ? noticeRes.value.data.html : '');
+    }
+
+    if (docRes.status === 'rejected' || userRes.status === 'rejected' || noticeRes.status === 'rejected') {
+      throw new Error('load failed');
+    }
   }
 
   useEffect(() => {
@@ -147,6 +167,25 @@ export default function AdminDashboard() {
     }
   }
 
+  async function saveNotice() {
+    if (!noticeHtml.trim()) {
+      setMessage('公告内容不能为空');
+      return;
+    }
+
+    setNoticeSaving(true);
+    setMessage('');
+    try {
+      const { data } = await api.put('/admin/notice', { html: noticeHtml });
+      setNoticeHtml(data.html || '');
+      setMessage('公告已保存');
+    } catch (err) {
+      setMessage(err?.response?.data?.message || '公告保存失败');
+    } finally {
+      setNoticeSaving(false);
+    }
+  }
+
   return (
     <div className="layout">
       <header className="topbar">
@@ -194,6 +233,22 @@ export default function AdminDashboard() {
             </button>
           </div>
           <p className="hint">包含姓名、学号、初始随机密码</p>
+        </section>
+
+        <section className="card full">
+          <h3>登录公告（支持 HTML）</h3>
+          <div className="stack">
+            <textarea
+              className="notice-editor"
+              value={noticeHtml}
+              onChange={(e) => setNoticeHtml(e.target.value)}
+              placeholder="<p>请输入公告 HTML</p>"
+            />
+            <button type="button" disabled={noticeSaving} onClick={saveNotice}>
+              {noticeSaving ? '保存中...' : '保存公告'}
+            </button>
+          </div>
+          <p className="hint">允许标签：p, br, strong, em, ul, ol, li, h1-h3, blockquote, div, span, a。保存后在登录弹窗生效。</p>
         </section>
 
         <section className="card full">

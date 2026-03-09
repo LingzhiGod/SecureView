@@ -4,6 +4,7 @@ import express from 'express';
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
 import iconv from 'iconv-lite';
+import sanitizeHtml from 'sanitize-html';
 import { parse as parseCsv } from 'csv-parse/sync';
 import xlsx from 'xlsx';
 import { db } from '../../config/db.js';
@@ -13,6 +14,7 @@ import { signToken } from '../../utils/jwt.js';
 import { generateRandomPassword } from '../../utils/password.js';
 import { decryptText, encryptText } from '../../utils/crypto.js';
 import { convertPdfToImages } from '../../utils/pdfConvert.js';
+import { DEFAULT_NOTICE_HTML, NOTICE_SETTING_KEY } from '../../constants/notice.js';
 
 const router = express.Router();
 
@@ -40,6 +42,11 @@ function queueDocumentConversion(documentId, pdfPath) {
   });
 }
 
+function getNoticeHtml() {
+  const row = db.prepare('SELECT value FROM system_settings WHERE key = ?').get(NOTICE_SETTING_KEY);
+  return row?.value || DEFAULT_NOTICE_HTML;
+}
+
 router.post('/login', (req, res) => {
   const rawUsername = req.body?.username ?? req.body?.student_id;
   const username = typeof rawUsername === 'string' ? rawUsername.trim() : '';
@@ -58,6 +65,54 @@ router.post('/login', (req, res) => {
 
   const token = signToken({ role: 'admin', adminId: admin.id, username: admin.username });
   return res.json({ token, admin: { id: admin.id, username: admin.username } });
+});
+
+router.get('/notice', auth('admin'), (req, res) => {
+  return res.json({ html: getNoticeHtml() });
+});
+
+router.put('/notice', auth('admin'), (req, res) => {
+  const input = typeof req.body?.html === 'string' ? req.body.html : '';
+  const cleaned = sanitizeHtml(input, {
+    allowedTags: [
+      'p',
+      'br',
+      'strong',
+      'b',
+      'em',
+      'i',
+      'u',
+      'ul',
+      'ol',
+      'li',
+      'h1',
+      'h2',
+      'h3',
+      'blockquote',
+      'div',
+      'span',
+      'a',
+    ],
+    allowedAttributes: {
+      a: ['href', 'target', 'rel'],
+    },
+    allowedSchemes: ['http', 'https', 'mailto'],
+  }).trim();
+
+  if (!cleaned) {
+    return res.status(400).json({ message: '公告内容不能为空' });
+  }
+  if (cleaned.length > 20000) {
+    return res.status(400).json({ message: '公告内容过长' });
+  }
+
+  db.prepare(
+    `INSERT INTO system_settings (key, value, updated_at)
+     VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
+  ).run(NOTICE_SETTING_KEY, cleaned);
+
+  return res.json({ html: cleaned });
 });
 
 router.get('/documents', auth('admin'), (req, res) => {

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../api/client';
 
 export default function UserLogin() {
@@ -7,7 +7,11 @@ export default function UserLogin() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+
+  const timeoutMessage =
+    searchParams.get('reason') === 'timeout' ? '5分钟无操作，已自动退出，请重新登录。' : '';
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -23,6 +27,7 @@ export default function UserLogin() {
       localStorage.setItem('sv_role', 'user');
       localStorage.setItem('sv_name', data.user.name);
       localStorage.setItem('sv_student_id', data.user.student_id);
+      sessionStorage.removeItem('sv_notice_ack');
       navigate('/viewer');
     } catch (err) {
       setError(err?.response?.data?.message || '登录失败');
@@ -42,6 +47,7 @@ export default function UserLogin() {
           placeholder="随机密码"
           type="password"
         />
+        {timeoutMessage ? <p className="warn">{timeoutMessage}</p> : null}
         {error ? <p className="error">{error}</p> : null}
         <button disabled={loading}>{loading ? '登录中...' : '登录'}</button>
       </form>

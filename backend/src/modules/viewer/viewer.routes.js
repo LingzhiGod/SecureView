@@ -3,8 +3,14 @@ import fs from 'fs';
 import express from 'express';
 import { db } from '../../config/db.js';
 import { auth } from '../../middleware/auth.js';
+import { DEFAULT_NOTICE_HTML, NOTICE_SETTING_KEY } from '../../constants/notice.js';
 
 const router = express.Router();
+
+router.get('/notice', auth('user'), (req, res) => {
+  const row = db.prepare('SELECT value FROM system_settings WHERE key = ?').get(NOTICE_SETTING_KEY);
+  return res.json({ html: row?.value || DEFAULT_NOTICE_HTML });
+});
 
 router.get('/documents', auth('user'), (req, res) => {
   const list = db

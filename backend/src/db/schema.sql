@@ -54,3 +54,9 @@ CREATE INDEX IF NOT EXISTS idx_documents_status_created_at
 
 CREATE INDEX IF NOT EXISTS idx_document_pages_document_id
   ON document_pages(document_id);
+
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
