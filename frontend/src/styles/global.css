@@ -220,6 +220,7 @@ td {
   display: flex;
   justify-content: center;
   padding: 12px;
+  -webkit-touch-callout: none;
 }
 
 .page-image {
@@ -228,6 +229,7 @@ td {
   height: auto;
   user-select: none;
   -webkit-user-drag: none;
+  -webkit-touch-callout: none;
 }
 
 .watermark-layer {
