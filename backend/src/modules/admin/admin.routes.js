@@ -3,6 +3,7 @@ import fs from 'fs';
 import express from 'express';
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
+import iconv from 'iconv-lite';
 import { parse as parseCsv } from 'csv-parse/sync';
 import xlsx from 'xlsx';
 import { db } from '../../config/db.js';
@@ -27,6 +28,17 @@ const upload = multer({
   }),
   limits: { fileSize: 200 * 1024 * 1024 },
 });
+
+function queueDocumentConversion(documentId, pdfPath) {
+  const pagesDir = path.join(env.storageRoot, 'pages', String(documentId));
+  setImmediate(async () => {
+    try {
+      await convertPdfToImages(documentId, pdfPath, pagesDir);
+    } catch (error) {
+      console.error('Convert failed:', error.message);
+    }
+  });
+}
 
 router.post('/login', (req, res) => {
   const rawUsername = req.body?.username ?? req.body?.student_id;
@@ -59,6 +71,66 @@ router.get('/documents', auth('admin'), (req, res) => {
   res.json({ list: docs });
 });
 
+router.patch('/documents/:id', auth('admin'), (req, res) => {
+  const id = Number(req.params.id);
+  const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ message: 'Invalid document id' });
+  }
+  if (!title) {
+    return res.status(400).json({ message: 'title is required' });
+  }
+
+  const result = db.prepare('UPDATE documents SET title = ? WHERE id = ?').run(title, id);
+  if (result.changes === 0) {
+    return res.status(404).json({ message: 'Document not found' });
+  }
+
+  return res.json({ id, title });
+});
+
+router.post('/documents/:id/reprocess', auth('admin'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ message: 'Invalid document id' });
+  }
+
+  const doc = db.prepare('SELECT id, pdf_path FROM documents WHERE id = ?').get(id);
+  if (!doc) {
+    return res.status(404).json({ message: 'Document not found' });
+  }
+  if (!doc.pdf_path || !fs.existsSync(doc.pdf_path)) {
+    return res.status(404).json({ message: 'Source PDF not found on server' });
+  }
+
+  db.prepare("UPDATE documents SET status = 'processing', total_pages = 0 WHERE id = ?").run(id);
+  queueDocumentConversion(id, doc.pdf_path);
+
+  return res.json({ id, status: 'processing' });
+});
+
+router.delete('/documents/:id', auth('admin'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ message: 'Invalid document id' });
+  }
+
+  const doc = db.prepare('SELECT id FROM documents WHERE id = ?').get(id);
+  if (!doc) {
+    return res.status(404).json({ message: 'Document not found' });
+  }
+
+  db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+
+  const pdfDir = path.join(env.storageRoot, 'pdfs', String(id));
+  const pagesDir = path.join(env.storageRoot, 'pages', String(id));
+  fs.rmSync(pdfDir, { recursive: true, force: true });
+  fs.rmSync(pagesDir, { recursive: true, force: true });
+
+  return res.json({ id, deleted: true });
+});
+
 router.post('/documents', auth('admin'), upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file) {
@@ -81,7 +153,6 @@ router.post('/documents', auth('admin'), upload.single('file'), async (req, res,
     const documentId = Number(info.lastInsertRowid);
 
     const pdfDir = path.join(env.storageRoot, 'pdfs', String(documentId));
-    const pagesDir = path.join(env.storageRoot, 'pages', String(documentId));
     fs.mkdirSync(pdfDir, { recursive: true });
     const finalPdfPath = path.join(pdfDir, 'source.pdf');
 
@@ -89,13 +160,7 @@ router.post('/documents', auth('admin'), upload.single('file'), async (req, res,
 
     db.prepare('UPDATE documents SET pdf_path = ? WHERE id = ?').run(finalPdfPath, documentId);
 
-    setImmediate(async () => {
-      try {
-        await convertPdfToImages(documentId, finalPdfPath, pagesDir);
-      } catch (error) {
-        console.error('Convert failed:', error.message);
-      }
-    });
+    queueDocumentConversion(documentId, finalPdfPath);
 
     return res.status(201).json({ id: documentId, title, status: 'processing' });
   } catch (error) {
@@ -115,11 +180,18 @@ function pickValue(row, keys) {
 function parseImportFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.csv') {
-    const raw = fs.readFileSync(filePath, 'utf-8');
+    const rawBuffer = fs.readFileSync(filePath);
+    const utf8 = iconv.decode(rawBuffer, 'utf8');
+    const gb18030 = iconv.decode(rawBuffer, 'gb18030');
+    const utf8Broken = (utf8.match(/\uFFFD/g) || []).length;
+    const gb18030Broken = (gb18030.match(/\uFFFD/g) || []).length;
+    const raw = (gb18030Broken <= utf8Broken ? gb18030 : utf8).replace(/^\uFEFF/, '');
+
     return parseCsv(raw, {
       columns: true,
       skip_empty_lines: true,
       trim: true,
+      bom: true,
     });
   }
   if (ext === '.xlsx' || ext === '.xls') {
@@ -203,37 +275,79 @@ function csvEscape(text) {
   return s;
 }
 
+function getUserExportRows() {
+  const rows = db
+    .prepare(
+      `SELECT u.id, u.name, u.student_id,
+              p.ciphertext AS ciphertext, p.iv AS iv, p.auth_tag AS auth_tag
+       FROM users u
+       LEFT JOIN user_initial_passwords p ON p.user_id = u.id
+       ORDER BY u.id ASC`
+    )
+    .all();
+
+  return rows.map((row) => {
+    let password = '';
+    if (row.ciphertext && row.iv && row.auth_tag) {
+      password = decryptText({
+        ciphertext: row.ciphertext,
+        iv: row.iv,
+        authTag: row.auth_tag,
+      });
+    }
+    return {
+      name: row.name,
+      student_id: row.student_id,
+      initial_password: password,
+    };
+  });
+}
+
+function touchPasswordExportedAt() {
+  db.prepare("UPDATE user_initial_passwords SET last_exported_at = datetime('now')").run();
+}
+
 router.get('/users/export', auth('admin'), (req, res, next) => {
   try {
-    const rows = db
-      .prepare(
-        `SELECT u.id, u.name, u.student_id,
-                p.ciphertext AS ciphertext, p.iv AS iv, p.auth_tag AS auth_tag
-         FROM users u
-         LEFT JOIN user_initial_passwords p ON p.user_id = u.id
-         ORDER BY u.id ASC`
-      )
-      .all();
-
+    const rows = getUserExportRows();
     const header = 'name,student_id,initial_password';
     const lines = rows.map((row) => {
-      let password = '';
-      if (row.ciphertext && row.iv && row.auth_tag) {
-        password = decryptText({
-          ciphertext: row.ciphertext,
-          iv: row.iv,
-          authTag: row.auth_tag,
-        });
-      }
-      return [csvEscape(row.name), csvEscape(row.student_id), csvEscape(password)].join(',');
+      return [csvEscape(row.name), csvEscape(row.student_id), csvEscape(row.initial_password)].join(',');
     });
 
-    db.prepare("UPDATE user_initial_passwords SET last_exported_at = datetime('now')").run();
+    touchPasswordExportedAt();
 
-    const content = [header, ...lines].join('\n');
+    const content = `\uFEFF${[header, ...lines].join('\r\n')}`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="users_export.csv"');
     return res.send(content);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/users/export.xlsx', auth('admin'), (req, res, next) => {
+  try {
+    const rows = getUserExportRows();
+    const records = rows.map((row) => ({
+      姓名: row.name,
+      学号: row.student_id,
+      初始密码: row.initial_password,
+    }));
+
+    const worksheet = xlsx.utils.json_to_sheet(records);
+    const workbook = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(workbook, worksheet, 'users');
+    const fileBuffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    touchPasswordExportedAt();
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader('Content-Disposition', 'attachment; filename="users_export.xlsx"');
+    return res.send(fileBuffer);
   } catch (error) {
     return next(error);
   }

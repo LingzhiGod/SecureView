@@ -8,6 +8,10 @@ const execFileAsync = promisify(execFile);
 
 export async function convertPdfToImages(documentId, pdfPath, outputDir) {
   fs.mkdirSync(outputDir, { recursive: true });
+  // Clean stale rendered pages from previous conversions.
+  fs.readdirSync(outputDir)
+    .filter((name) => /^page-\d+\.png$/.test(name))
+    .forEach((name) => fs.unlinkSync(path.join(outputDir, name)));
 
   const outputPrefix = path.join(outputDir, 'page');
   try {

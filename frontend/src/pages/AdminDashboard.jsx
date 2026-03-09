@@ -4,6 +4,7 @@ import api from '../api/client';
 export default function AdminDashboard() {
   const [docs, setDocs] = useState([]);
   const [users, setUsers] = useState([]);
+  const [docTitles, setDocTitles] = useState({});
   const [pdfFile, setPdfFile] = useState(null);
   const [title, setTitle] = useState('');
   const [importFile, setImportFile] = useState(null);
@@ -14,8 +15,16 @@ export default function AdminDashboard() {
 
   async function loadData() {
     const [docRes, userRes] = await Promise.all([api.get('/admin/documents'), api.get('/admin/users')]);
-    setDocs(docRes.data.list || []);
+    const docList = docRes.data.list || [];
+    setDocs(docList);
     setUsers(userRes.data.list || []);
+    setDocTitles((prev) => {
+      const next = {};
+      docList.forEach((doc) => {
+        next[doc.id] = prev[doc.id] ?? doc.title;
+      });
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -67,6 +76,77 @@ export default function AdminDashboard() {
     window.location.href = '/admin-login';
   }
 
+  function downloadExport(endpoint, filename) {
+    const token = localStorage.getItem('sv_token');
+    if (!token) return;
+    fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}${endpoint}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((r) => {
+        if (!r.ok) {
+          throw new Error('下载失败');
+        }
+        return r.blob();
+      })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => setMessage('导出失败'));
+  }
+
+  async function saveDocTitle(id) {
+    const newTitle = (docTitles[id] || '').trim();
+    if (!newTitle) {
+      setMessage('标题不能为空');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      await api.patch(`/admin/documents/${id}`, { title: newTitle });
+      setMessage('标题已更新');
+      await loadData();
+    } catch (err) {
+      setMessage(err?.response?.data?.message || '更新标题失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reprocessDoc(id) {
+    setBusy(true);
+    setMessage('');
+    try {
+      await api.post(`/admin/documents/${id}/reprocess`);
+      setMessage('已触发重新转换，请稍后刷新状态');
+      await loadData();
+    } catch (err) {
+      setMessage(err?.response?.data?.message || '重试转换失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteDoc(id) {
+    if (!window.confirm('确认删除该 PDF 及其页面图片吗？')) return;
+    setBusy(true);
+    setMessage('');
+    try {
+      await api.delete(`/admin/documents/${id}`);
+      setMessage('文档已删除');
+      await loadData();
+    } catch (err) {
+      setMessage(err?.response?.data?.message || '删除失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="layout">
       <header className="topbar">
@@ -102,23 +182,17 @@ export default function AdminDashboard() {
 
         <section className="card">
           <h3>导出用户账号</h3>
-          <a className="button-link" href={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/admin/users/export`} onClick={(e) => {
-            const token = localStorage.getItem('sv_token');
-            if (!token) return;
-            e.preventDefault();
-            fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/admin/users/export`, {
-              headers: { Authorization: `Bearer ${token}` },
-            })
-              .then((r) => r.blob())
-              .then((blob) => {
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'users_export.csv';
-                a.click();
-                URL.revokeObjectURL(url);
-              });
-          }}>下载 CSV</a>
+          <div className="stack">
+            <button type="button" onClick={() => downloadExport('/admin/users/export', 'users_export.csv')}>
+              下载 CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadExport('/admin/users/export.xlsx', 'users_export.xlsx')}
+            >
+              下载 Excel
+            </button>
+          </div>
           <p className="hint">包含姓名、学号、初始随机密码</p>
         </section>
 
@@ -129,19 +203,42 @@ export default function AdminDashboard() {
               <tr>
                 <th>ID</th>
                 <th>标题</th>
+                <th>原文件名</th>
                 <th>状态</th>
                 <th>页数</th>
                 <th>创建时间</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
               {docs.map((d) => (
                 <tr key={d.id}>
                   <td>{d.id}</td>
-                  <td>{d.title}</td>
+                  <td>
+                    <input
+                      value={docTitles[d.id] ?? d.title}
+                      onChange={(e) =>
+                        setDocTitles((prev) => ({ ...prev, [d.id]: e.target.value }))
+                      }
+                    />
+                  </td>
+                  <td>{d.original_filename}</td>
                   <td>{d.status}</td>
                   <td>{d.total_pages}</td>
                   <td>{d.created_at}</td>
+                  <td>
+                    <div className="stack">
+                      <button type="button" disabled={busy} onClick={() => saveDocTitle(d.id)}>
+                        保存标题
+                      </button>
+                      <button type="button" disabled={busy} onClick={() => reprocessDoc(d.id)}>
+                        重试转换
+                      </button>
+                      <button type="button" disabled={busy} onClick={() => deleteDoc(d.id)}>
+                        删除
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

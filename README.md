@@ -5,9 +5,10 @@
 ## 功能
 
 - 管理员登录后上传 PDF（服务端转图片按页展示）
+- 管理员可管理 PDF（修改标题、重试转换、删除）
 - 管理员 CSV/Excel 导入用户（姓名、学号）
 - 系统自动生成随机初始密码（用户登录只校验哈希）
-- 管理员导出用户账号 CSV（姓名、学号、初始密码）
+- 管理员导出用户账号 CSV/Excel（姓名、学号、初始密码）
 - 用户使用学号+随机密码登录
 - 用户端只提供 PDF 列表和在线阅读
 - 阅读页动态水印（姓名+学号+时间）
@@ -94,8 +95,12 @@ npm run dev
 - 管理员登录: `POST /api/admin/login`
 - 上传 PDF: `POST /api/admin/documents`
 - 文档列表(管理员): `GET /api/admin/documents`
+- 更新文档标题: `PATCH /api/admin/documents/:id`
+- 重试文档转换: `POST /api/admin/documents/:id/reprocess`
+- 删除文档: `DELETE /api/admin/documents/:id`
 - 导入用户: `POST /api/admin/users/import`
 - 导出用户: `GET /api/admin/users/export`
+- 导出用户(Excel): `GET /api/admin/users/export.xlsx`
 - 用户列表: `GET /api/admin/users`
 - 用户登录: `POST /api/auth/login`
 - 用户文档列表: `GET /api/viewer/documents`
